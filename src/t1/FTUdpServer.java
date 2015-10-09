@@ -139,6 +139,7 @@ public class FTUdpServer implements Runnable {
 	 */
 	private void selectiveRepeatReceive() {
 		try {
+			System.out.println("SELECTIVE_REPEAT");
 			window = new TreeSet<Long>();
 
 			// DatagramSocket socket = new DatagramSocket();
