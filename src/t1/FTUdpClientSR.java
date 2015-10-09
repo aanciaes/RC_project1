@@ -9,7 +9,11 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -89,11 +93,29 @@ public class FTUdpClientSR {
 
 				FileInputStream f = new FileInputStream(filename);
 				
-				int size = WindowSize;
+				int freeSlots = WindowSize;
 				
 				while (f.available()>0){		//Checks end of file, returns 0 if file is position beyond EOF
 					//Reading blocks to window
-					fillWindow(f,size);
+					freeSlots = fillWindow(f,freeSlots);
+					sendDataFromWindow();
+					
+					TftpPacket ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS);
+					System.err.println(">>>> got: " + ack);
+					
+					if (ack != null)
+						if (ack.getOpcode() == OP_ACK)
+							if (window.containsKey(ack.getBlockSeqN())) {
+								window.get(ack.getBlockSeqN()).setAck(true);
+								freeSlots = handleSliding(freeSlots);
+							} else {
+								System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
+							}
+						else {
+							System.err.println("error +++ (unexpected packet)");
+						}
+					else
+						System.err.println("timeout...");
 				}
 				
 				// Send an empty block to signal the end of file.
@@ -142,19 +164,90 @@ public class FTUdpClientSR {
 		throw new IOException("Too many retries");
 	}
 	
-	void fillWindow(FileInputStream f, int size) throws IOException {
+	int fillWindow(FileInputStream f, int freeSlots) throws IOException {
 		int i = 0;
 		int n;
+		int free = freeSlots;
 		byte[] buffer = new byte[BlockSize];
 		try {
-			while ((n = f.read(buffer)) > 0 && i < size) {
+			while ((n = f.read(buffer)) > 0 && i < freeSlots) {
 				TftpPacket pkt = new TftpPacket().putShort(OP_DATA).putLong(byteCount).putBytes(buffer, n);
 				window.put(byteCount, new WindowEntry(pkt));
 				byteCount += n;
+				i++;
+				free--;
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
+		return free;
+	}
+	
+	void sendDataFromWindow () throws IOException {
+		Collection<WindowEntry> c = window.values();
+		
+		Iterator<WindowEntry> t = c.iterator();
+		
+		while(t.hasNext()){
+			WindowEntry w = t.next();
+			if(!w.isAck()){
+				if(w.getSend_counter()==0){
+					System.err.println("sending: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
+					socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
+					w.send_counterIncrement();
+				}else{
+					if(System.currentTimeMillis()>w.getTimeLimtit()){
+						socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
+						w.send_counterIncrement();
+					}
+				}
+			}
+		}
+	}
+	
+	int handleSliding (int free) {
+		Collection<WindowEntry> c = window.values();
+		Iterator<WindowEntry> t = c.iterator();
+		int freeSlots = free;
+		
+		for(int i = 0;i<WindowSize;i++){
+			if(t.hasNext()){
+				WindowEntry w = t.next();
+				if(w.isAck()){
+					window.remove(w.getPkt().getBlockSeqN());
+					freeSlots++;
+				}
+				return freeSlots;
+			}
+		}
+		
+		return freeSlots;
+	}
+	
+	public static void main(String[] args) throws Exception {
+		MyDatagramSocket.init(1, 1);
+
+		switch (args.length) {
+		case 5:
+			WindowSize = Integer.parseInt(args[4]);
+		case 4:
+			Timeout = Integer.parseInt(args[3]);
+		case 3:
+			BlockSize = Integer.valueOf(args[2]);
+		case 2:
+			break;
+		default:
+			System.out.printf("usage: java FTUdpClientSR filename servidor [blocksize [ timeout [ windowsize ]]]\n");
+			System.exit(0);
+		}
+
+		String filename = args[0];
+
+		// Preparar endereco e o porto do servidor
+		String server = args[1];
+		SocketAddress srvAddr = new InetSocketAddress(server, FTUdpServer.DEFAULT_PORT);
+
+		new FTUdpClientSR(filename, srvAddr).sendFile();
 	}
 	
 }

@@ -1,18 +1,19 @@
 package t1;
 
+
 public class WindowEntry {
 	
 	private TftpPacket pkt;
 	private boolean ack;
-	int retry_counter;
+	int send_counter;
 	long timeLimtit;
 	
 	
 	public WindowEntry (TftpPacket pack) {
 		pkt = pack;
 		ack = false;
-		retry_counter =  0;
-		timeLimtit = System.currentTimeMillis() + FTUdpClient.DEFAULT_TIMEOUT;
+		send_counter =  0;
+		timeLimtit = System.currentTimeMillis() + FTUdpClientSR.Timeout;
 	}
 
 
@@ -36,13 +37,16 @@ public class WindowEntry {
 	}
 
 
-	public int getRetry_counter() {
-		return retry_counter;
+	public int getSend_counter() {
+		return send_counter;
+	}
+	
+	public void send_counterIncrement (){
+		send_counter++;
 	}
 
-
-	public void setRetry_counter(int retry_counter) {
-		this.retry_counter = retry_counter;
+	public void setRetry_counter(int send_counter) {
+		this.send_counter = send_counter;
 	}
 
 
