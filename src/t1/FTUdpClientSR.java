@@ -7,7 +7,9 @@ import static t1.TftpPacket.OP_WRQ;
 
 import java.awt.Window;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -35,6 +37,8 @@ public class FTUdpClientSR {
 
 	private String filename;
 	
+	RandomAccessFile raf;
+	
 	private TreeMap<Long, WindowEntry> window;
 	long byteCount = 1; // block byte count starts at 1
 	
@@ -42,10 +46,12 @@ public class FTUdpClientSR {
 	private BlockingQueue<TftpPacket> receiverQueue;
 	volatile private SocketAddress srvAddress;
 
-	FTUdpClientSR(String filename, SocketAddress srvAddress) {
+	FTUdpClientSR(String filename, SocketAddress srvAddress) throws FileNotFoundException {
 		this.filename = filename;
 		this.srvAddress = srvAddress;
 		window = new TreeMap <Long, WindowEntry>();
+		
+		this.raf = new RandomAccessFile("debug" + ".txt", "rw");
 	}
 	
 	void sendFile() {
@@ -86,6 +92,10 @@ public class FTUdpClientSR {
 					.putString("selective_repeat")
 					.putByte(0)
 					.putString("true")
+					.putByte(0)
+					.putString("blksize")
+					.putByte(0)
+					.putString(""+BlockSize)
 					.putByte(0);
 			
 			//First packet, connecting packet
@@ -111,7 +121,6 @@ public class FTUdpClientSR {
 							if (ack.getOpcode() == OP_ACK)
 								if (window.containsKey(ack.getBlockSeqN())) {
 									window.get(ack.getBlockSeqN()).setAck(true);
-									//freeSlots = handleSliding(freeSlots);
 								} else {
 									System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
 								}
@@ -125,6 +134,7 @@ public class FTUdpClientSR {
 					}
 					freeSlots = handleSliding(freeSlots);
 				}
+				
 				
 				// Send an empty block to signal the end of file.
 				TftpPacket pkt = new TftpPacket().putShort(OP_DATA).putLong(byteCount).putBytes(new byte[0], 0);
@@ -179,12 +189,14 @@ public class FTUdpClientSR {
 		int free = freeSlots;
 		byte[] buffer = new byte[BlockSize];
 		try {
-			while ((n = f.read(buffer)) > 0 && i < freeSlots) {
-				TftpPacket pkt = new TftpPacket().putShort(OP_DATA).putLong(byteCount).putBytes(buffer, n);
-				window.put(byteCount, new WindowEntry(pkt));
-				byteCount += n;
+			while (i < freeSlots) {
+				if ((n = f.read(buffer)) > 0) {
+					TftpPacket pkt = new TftpPacket().putShort(OP_DATA).putLong(byteCount).putBytes(buffer, n);
+					window.put(byteCount, new WindowEntry(pkt));
+					byteCount += n;
+					free--;
+				}
 				i++;
-				free--;
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -204,11 +216,13 @@ public class FTUdpClientSR {
 					System.err.println("sending: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
 					socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
 					w.send_counterIncrement();
+					raf.write(w.getPkt().getBlockData());
 				}else{
 					if(System.currentTimeMillis()>w.getTimeLimtit()){
-						System.err.println("sending: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
+						System.err.println("sending after timeout: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
 						socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
 						w.send_counterIncrement();
+						raf.write(w.getPkt().getBlockData());
 					}
 				}
 			}
@@ -220,31 +234,17 @@ public class FTUdpClientSR {
 		Collection<WindowEntry> c = window.values();
 		Iterator<WindowEntry> t = c.iterator();
 		int freeSlots = free;
-		
-		/*for(Map.Entry<Long,WindowEntry> entry : window.entrySet()) {
-			  Long key = entry.getKey();
-			  WindowEntry w = entry.getValue();
-
-			  if(w.isAck()){
-					window.remove(key);
-					freeSlots++;
-				}else{
-					return freeSlots;
-				}
-			}*/
-		
-		
-		
+			
 		for(int i = 0;i<WindowSize;i++){
 			if(t.hasNext()){
-				System.out.println("i = " + i);
 				WindowEntry w = t.next();
 				if(w.isAck()){
+					System.out.println("Foi removido = " + w.getPkt().getBlockSeqN());
 					t.remove();
 					window.remove(w.getPkt().getBlockSeqN());
 					freeSlots++;
 				}else{
-				return freeSlots;
+					return freeSlots;
 				}
 			}
 		}
@@ -280,7 +280,7 @@ public class FTUdpClientSR {
 			System.out.printf("usage: java FTUdpClientSR filename servidor [blocksize [ timeout [ windowsize ]]]\n");
 			System.exit(0);
 		}
-
+		
 		String filename = args[0];
 
 		// Preparar endereco e o porto do servidor
