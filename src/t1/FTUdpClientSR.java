@@ -5,6 +5,7 @@ import static t1.TftpPacket.OP_ACK;
 import static t1.TftpPacket.OP_DATA;
 import static t1.TftpPacket.OP_WRQ;
 
+import java.awt.Window;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -13,6 +14,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -94,28 +96,34 @@ public class FTUdpClientSR {
 				FileInputStream f = new FileInputStream(filename);
 				
 				int freeSlots = WindowSize;
-				
+	
 				while (f.available()>0){		//Checks end of file, returns 0 if file is position beyond EOF
 					//Reading blocks to window
 					freeSlots = fillWindow(f,freeSlots);
 					sendDataFromWindow();
+					boolean time = true;
 					
-					TftpPacket ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS);
-					System.err.println(">>>> got: " + ack);
-					
-					if (ack != null)
-						if (ack.getOpcode() == OP_ACK)
-							if (window.containsKey(ack.getBlockSeqN())) {
-								window.get(ack.getBlockSeqN()).setAck(true);
-								freeSlots = handleSliding(freeSlots);
-							} else {
-								System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
+					while (!windowFull() && time) {
+						TftpPacket ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS);
+						System.err.println(">>>> got: " + ack);
+
+						if (ack != null)
+							if (ack.getOpcode() == OP_ACK)
+								if (window.containsKey(ack.getBlockSeqN())) {
+									window.get(ack.getBlockSeqN()).setAck(true);
+									//freeSlots = handleSliding(freeSlots);
+								} else {
+									System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
+								}
+							else {
+								System.err.println("error +++ (unexpected packet)");
 							}
-						else {
-							System.err.println("error +++ (unexpected packet)");
+						else{
+							time = false;
+							System.err.println("timeout...");
 						}
-					else
-						System.err.println("timeout...");
+					}
+					freeSlots = handleSliding(freeSlots);
 				}
 				
 				// Send an empty block to signal the end of file.
@@ -126,6 +134,7 @@ public class FTUdpClientSR {
 
 			} catch (Exception e) {
 				System.err.println("Failed with error \n" + e.getMessage());
+				e.printStackTrace();
 			}
 			socket.close();
 			System.out.println("Done...");
@@ -197,6 +206,7 @@ public class FTUdpClientSR {
 					w.send_counterIncrement();
 				}else{
 					if(System.currentTimeMillis()>w.getTimeLimtit()){
+						System.err.println("sending: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
 						socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
 						w.send_counterIncrement();
 					}
@@ -206,22 +216,52 @@ public class FTUdpClientSR {
 	}
 	
 	int handleSliding (int free) {
+	
 		Collection<WindowEntry> c = window.values();
 		Iterator<WindowEntry> t = c.iterator();
 		int freeSlots = free;
 		
+		/*for(Map.Entry<Long,WindowEntry> entry : window.entrySet()) {
+			  Long key = entry.getKey();
+			  WindowEntry w = entry.getValue();
+
+			  if(w.isAck()){
+					window.remove(key);
+					freeSlots++;
+				}else{
+					return freeSlots;
+				}
+			}*/
+		
+		
+		
 		for(int i = 0;i<WindowSize;i++){
 			if(t.hasNext()){
+				System.out.println("i = " + i);
 				WindowEntry w = t.next();
 				if(w.isAck()){
+					t.remove();
 					window.remove(w.getPkt().getBlockSeqN());
 					freeSlots++;
-				}
+				}else{
 				return freeSlots;
+				}
 			}
 		}
 		
 		return freeSlots;
+	}
+	
+	boolean windowFull () {
+		Collection<WindowEntry> c = window.values();
+		Iterator<WindowEntry> t = c.iterator();
+		int n = 0;
+		
+		while(t.hasNext()){
+			if(t.next().isAck())
+				n++;
+		}
+		return n==WindowSize;
 	}
 	
 	public static void main(String[] args) throws Exception {
