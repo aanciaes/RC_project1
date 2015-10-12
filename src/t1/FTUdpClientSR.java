@@ -37,8 +37,10 @@ public class FTUdpClientSR {
 
 	private String filename;
 
-	RandomAccessFile raf;
-
+	static long startUpTime;
+	long allPropagationTime;
+	int numACKS = 0;
+	
 	private TreeMap<Long, WindowEntry> window;
 	long byteCount = 1; // block byte count starts at 1
 
@@ -50,8 +52,6 @@ public class FTUdpClientSR {
 		this.filename = filename;
 		this.srvAddress = srvAddress;
 		window = new TreeMap<Long, WindowEntry>();
-
-		this.raf = new RandomAccessFile("debug" + ".txt", "rw");
 	}
 
 	void sendFile() {
@@ -101,20 +101,23 @@ public class FTUdpClientSR {
 
 				while (f.available() > 0) { // Checks end of file, returns 0 if
 											// file is position beyond EOF
-					// Reading blocks to window
+					// Reading blocks to window depending on the free Slots available
 					freeSlots = fillWindow(f, freeSlots);
+					
+					//Send all data to server, except those that already ar ack's
 					sendDataFromWindow();
-					// boolean time = true;
-
-					// while (!windowFull() && time) {
+					
 					TftpPacket ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS);
 					System.err.println(">>>> got: " + ack);
 
 					if (ack != null)
 						if (ack.getOpcode() == OP_ACK)
 							if (window.containsKey(ack.getBlockSeqN())) {
-								window.get(ack.getBlockSeqN()).setAck(true);
-								freeSlots = handleSliding(freeSlots);
+								WindowEntry got = window.get(ack.getBlockSeqN());
+								got.setAck(true);
+								numACKS++;
+								ajustTimeout(got);
+								freeSlots = handleSliding(freeSlots);	
 							} else {
 								System.out.println("OLA");
 								System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
@@ -123,36 +126,16 @@ public class FTUdpClientSR {
 							System.err.println("error +++ (unexpected packet)");
 						}
 					else {
-						// time = false;
 						System.err.println("timeout...");
 					}
 				}
-				// freeSlots = handleSliding(freeSlots);
-				// }
 
-				TftpPacket ack;
-				while ((ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS)) != null) {
-					// TftpPacket ack = receiverQueue.poll(Timeout,
-					// TimeUnit.MILLISECONDS);
-					System.err.println(">>>> got delayed: " + ack);
-
-					if (ack.getOpcode() == OP_ACK)
-						if (window.containsKey(ack.getBlockSeqN())) {
-							window.get(ack.getBlockSeqN()).setAck(true);
-							// freeSlots = handleSliding(freeSlots);
-						} else {
-							System.out.println("OLA");
-							System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
-						}
-					else {
-						System.err.println("error +++ (unexpected packet)");
-					}
-				}
-
+				lastAcks ();
+				
 				// Send an empty block to signal the end of file.
 				TftpPacket pkt = new TftpPacket().putShort(OP_DATA).putLong(byteCount).putBytes(new byte[0], 0);
 				sendFinal(pkt, byteCount, DEFAULT_MAX_RETRIES);
-
+				
 				f.close();
 
 			} catch (Exception e) {
@@ -161,6 +144,10 @@ public class FTUdpClientSR {
 			}
 			socket.close();
 			System.out.println("Done...");
+			System.out.println("Total Transfer Time = " + (System.currentTimeMillis() - startUpTime) + "ms");
+			System.out.println("Total bytes tranfered = " + byteCount);
+			System.out.println("Number of ack's recevied = " + numACKS);
+			System.out.println("Last Timeout = " + Timeout);
 		} catch (Exception x) {
 			x.printStackTrace();
 		}
@@ -183,6 +170,7 @@ public class FTUdpClientSR {
 			if (ack != null)
 				if (ack.getOpcode() == OP_ACK)
 					if (expectedACK <= ack.getBlockSeqN()) {
+						numACKS++;
 						return;
 					} else {
 						System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
@@ -227,20 +215,23 @@ public class FTUdpClientSR {
 			if (!w.isAck()) {
 				if (w.getSend_counter() == 0) {
 					System.err.println("sending: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
+					w.setSendTime(System.currentTimeMillis());
 					socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
 					w.send_counterIncrement();
-					raf.write(w.getPkt().getBlockData());
 				} else {
 					if (System.currentTimeMillis() > w.getTimeLimtit()) {
+						w.setTimeLimit();
+						w.setSendTime(System.currentTimeMillis());
 						System.err.println(
 								"sending after timeout: " + w.getPkt() + " expecting:" + w.getPkt().getBlockSeqN());
+						System.out.println(Timeout);
 						socket.send(new DatagramPacket(w.getPkt().getPacketData(), w.getPkt().getLength(), srvAddress));
 						w.send_counterIncrement();
-						raf.write(w.getPkt().getBlockData());
 					}
 				}
 			}
 		}
+		System.out.println("OUT");
 	}
 
 	int handleSliding(int free) {
@@ -277,7 +268,37 @@ public class FTUdpClientSR {
 		}
 		return n == WindowSize;
 	}
+	
+	void lastAcks () throws InterruptedException {
+		TftpPacket ack;
+		while ((ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS)) != null) {
+			// TftpPacket ack = receiverQueue.poll(Timeout,
+			// TimeUnit.MILLISECONDS);
+			System.err.println(">>>> got delayed: " + ack);
 
+			if (ack.getOpcode() == OP_ACK)
+				if (window.containsKey(ack.getBlockSeqN())) {
+					window.get(ack.getBlockSeqN()).setAck(true);
+					numACKS++;
+				} else {
+					System.err.println("wrong ack ignored, block= " + ack.getBlockSeqN());
+				}
+			else {
+				System.err.println("error +++ (unexpected packet)");
+			}
+		}
+	}
+
+	void ajustTimeout (WindowEntry entry){
+		
+		allPropagationTime += (System.currentTimeMillis() - entry.getSendTime());
+		
+		Timeout = (int)(allPropagationTime/numACKS + 20);
+		System.out.println("Timeout = " + Timeout);
+		
+	}
+	
+	
 	public static void main(String[] args) throws Exception {
 		MyDatagramSocket.init(1, 1);
 
@@ -301,6 +322,7 @@ public class FTUdpClientSR {
 		String server = args[1];
 		SocketAddress srvAddr = new InetSocketAddress(server, FTUdpServer.DEFAULT_PORT);
 
+		startUpTime = System.currentTimeMillis(); 
 		new FTUdpClientSR(filename, srvAddr).sendFile();
 	}
 

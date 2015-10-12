@@ -7,13 +7,23 @@ public class WindowEntry {
 	private boolean ack;
 	int send_counter;
 	long timeLimtit;
+	long sendTime;
 	
 	
 	public WindowEntry (TftpPacket pack) {
 		pkt = pack;
 		ack = false;
 		send_counter =  0;
+		sendTime = 0;
 		timeLimtit = System.currentTimeMillis() + FTUdpClientSR.Timeout;
+	}
+	
+	public void setSendTime (long sendTime) {
+		this.sendTime = System.currentTimeMillis();
+	}
+	
+	public long getSendTime () {
+		return sendTime;
 	}
 
 
@@ -49,6 +59,9 @@ public class WindowEntry {
 		this.send_counter = send_counter;
 	}
 
+	public void setTimeLimit (){
+		timeLimtit = System.currentTimeMillis() + FTUdpClientSR.Timeout;
+	}
 
 	public long getTimeLimtit() {
 		return timeLimtit;
